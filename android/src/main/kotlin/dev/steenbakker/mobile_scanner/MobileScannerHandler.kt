@@ -10,7 +10,6 @@ import android.os.Looper
 import android.util.Size
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ExperimentalLensFacing
-import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import dev.steenbakker.mobile_scanner.objects.BarcodeFormats
 import dev.steenbakker.mobile_scanner.objects.DetectionSpeed
 import dev.steenbakker.mobile_scanner.objects.MobileScannerErrorCodes
@@ -22,15 +21,17 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.EventChannel
 import io.flutter.view.TextureRegistry
 import java.io.File
-import com.google.mlkit.vision.barcode.ZoomSuggestionOptions
+import zxingcpp.BarcodeReader
 
+@ExperimentalGetImage
 class MobileScannerHandler(
     private val activity: Activity,
     private val barcodeHandler: BarcodeHandler,
     binaryMessenger: BinaryMessenger,
     private val permissions: MobileScannerPermissions,
     private val addPermissionListener: (RequestPermissionsResultListener) -> Unit,
-    textureRegistry: TextureRegistry): MethodChannel.MethodCallHandler {
+    textureRegistry: TextureRegistry
+) : MethodChannel.MethodCallHandler {
 
     /**
      * Cached CameraManager instance to avoid repeated system service lookups.
@@ -55,31 +56,36 @@ class MobileScannerHandler(
 //                "data" to it,
 //            ))
 
-            analyzerResult?.success(mapOf(
-                "name" to "barcode",
-                "data" to it
-            ))
+            analyzerResult?.success(
+                mapOf(
+                    "name" to "barcode",
+                    "data" to it
+                )
+            )
             analyzerResult = null
         }
     }
 
     private var analyzerResult: MethodChannel.Result? = null
 
-    private val callback: MobileScannerCallback = { barcodes: List<Map<String, Any?>>, image: ByteArray?, width: Int?, height: Int? ->
-        barcodeHandler.publishEvent(mapOf(
-            "name" to "barcode",
-            "data" to barcodes,
-            // The image dimensions are always provided.
-            // The image bytes are only non-null when `returnImage` is true.
-            "image" to mapOf(
-                "bytes" to image,
-                "width" to width?.toDouble(),
-                "height" to height?.toDouble(),
+    private val callback: MobileScannerCallback =
+        { barcodes: List<Map<String, Any?>>, image: ByteArray?, width: Int?, height: Int? ->
+            barcodeHandler.publishEvent(
+                mapOf(
+                    "name" to "barcode",
+                    "data" to barcodes,
+                    // The image dimensions are always provided.
+                    // The image bytes are only non-null when `returnImage` is true.
+                    "image" to mapOf(
+                        "bytes" to image,
+                        "width" to width?.toDouble(),
+                        "height" to height?.toDouble(),
+                    )
+                )
             )
-        ))
-    }
+        }
 
-    private val errorCallback: MobileScannerErrorCallback = {error: String ->
+    private val errorCallback: MobileScannerErrorCallback = { error: String ->
         barcodeHandler.publishError(MobileScannerErrorCodes.BARCODE_ERROR, error, null)
     }
 
@@ -88,28 +94,33 @@ class MobileScannerHandler(
 
     private var mobileScanner: MobileScanner? = null
 
-    private val torchStateCallback: TorchStateCallback = {state: Int ->
+    private val torchStateCallback: TorchStateCallback = { state: Int ->
         // Off = 0, On = 1
         barcodeHandler.publishEvent(mapOf("name" to "torchState", "data" to state))
     }
 
-    private val zoomScaleStateCallback: ZoomScaleStateCallback = {zoomScale: Double ->
+    private val zoomScaleStateCallback: ZoomScaleStateCallback = { zoomScale: Double ->
         barcodeHandler.publishEvent(mapOf("name" to "zoomScaleState", "data" to zoomScale))
     }
 
     init {
-        methodChannel = MethodChannel(binaryMessenger,
-            "dev.steenbakker.mobile_scanner/scanner/method")
+        methodChannel = MethodChannel(
+            binaryMessenger,
+            "dev.steenbakker.mobile_scanner/scanner/method"
+        )
         methodChannel!!.setMethodCallHandler(this)
 
         val deviceOrientationListener = DeviceOrientationListener(activity)
 
-        deviceOrientationChannel = EventChannel(binaryMessenger,
-            "dev.steenbakker.mobile_scanner/scanner/deviceOrientation")
+        deviceOrientationChannel = EventChannel(
+            binaryMessenger,
+            "dev.steenbakker.mobile_scanner/scanner/deviceOrientation"
+        )
         deviceOrientationChannel!!.setStreamHandler(deviceOrientationListener)
 
         mobileScanner = MobileScanner(
-            activity, textureRegistry, callback, errorCallback, deviceOrientationListener)
+            activity, textureRegistry, callback, errorCallback, deviceOrientationListener
+        )
     }
 
     fun dispose(activityPluginBinding: ActivityPluginBinding) {
@@ -123,7 +134,7 @@ class MobileScannerHandler(
 
         val listener: RequestPermissionsResultListener? = permissions.getPermissionListener()
 
-        if(listener != null) {
+        if (listener != null) {
             activityPluginBinding.removeRequestPermissionsResultListener(listener)
         }
     }
@@ -136,19 +147,26 @@ class MobileScannerHandler(
             "request" -> permissions.requestPermission(
                 activity,
                 addPermissionListener,
-                object: MobileScannerPermissions.ResultCallback {
+                object : MobileScannerPermissions.ResultCallback {
                     override fun onResult(errorCode: String?) {
-                        when(errorCode) {
+                        when (errorCode) {
                             null -> result.success(true)
                             MobileScannerErrorCodes.CAMERA_ACCESS_DENIED -> result.success(false)
                             MobileScannerErrorCodes.CAMERA_PERMISSIONS_REQUEST_ONGOING -> result.error(
                                 MobileScannerErrorCodes.CAMERA_PERMISSIONS_REQUEST_ONGOING,
-                                MobileScannerErrorCodes.CAMERA_PERMISSIONS_REQUEST_ONGOING_MESSAGE, null)
+                                MobileScannerErrorCodes.CAMERA_PERMISSIONS_REQUEST_ONGOING_MESSAGE,
+                                null
+                            )
+
                             else -> result.error(
-                                MobileScannerErrorCodes.GENERIC_ERROR, MobileScannerErrorCodes.GENERIC_ERROR_MESSAGE, null)
+                                MobileScannerErrorCodes.GENERIC_ERROR,
+                                MobileScannerErrorCodes.GENERIC_ERROR_MESSAGE,
+                                null
+                            )
                         }
                     }
                 })
+
             "start" -> start(call, result)
             "pause" -> pause(call, result)
             "stop" -> stop(call, result)
@@ -183,7 +201,8 @@ class MobileScannerHandler(
         val invertImage: Boolean = call.argument<Boolean>("invertImage") ?: false
         val initialZoom: Double? = call.argument<Double?>("initialZoom")
 
-        val barcodeScannerOptions: BarcodeScannerOptions? = buildBarcodeScannerOptions(formats, autoZoom)
+        val barcodeScannerOptions: BarcodeReader.Options =
+            buildBarcodeScannerOptions(formats, autoZoom)
 
         val position = MobileScannerCameraLensSelector.selectCamera(cameraManager, facing, lensType)
 
@@ -203,16 +222,18 @@ class MobileScannerHandler(
             zoomScaleStateCallback,
             mobileScannerStartedCallback = {
                 Handler(Looper.getMainLooper()).post {
-                    result.success(mapOf(
-                        "textureId" to it.id,
-                        "size" to mapOf("width" to it.width, "height" to it.height),
-                        "naturalDeviceOrientation" to it.naturalDeviceOrientation,
-                        "handlesCropAndRotation" to it.handlesCropAndRotation,
-                        "sensorOrientation" to it.sensorOrientation,
-                        "currentTorchState" to it.currentTorchState,
-                        "numberOfCameras" to it.numberOfCameras,
-                        "cameraDirection" to it.cameraDirection
-                    ))
+                    result.success(
+                        mapOf(
+                            "textureId" to it.id,
+                            "size" to mapOf("width" to it.width, "height" to it.height),
+                            "naturalDeviceOrientation" to it.naturalDeviceOrientation,
+                            "handlesCropAndRotation" to it.handlesCropAndRotation,
+                            "sensorOrientation" to it.sensorOrientation,
+                            "currentTorchState" to it.currentTorchState,
+                            "numberOfCameras" to it.numberOfCameras,
+                            "cameraDirection" to it.cameraDirection
+                        )
+                    )
                 }
             },
             mobileScannerErrorCallback = {
@@ -225,6 +246,7 @@ class MobileScannerHandler(
                                 null
                             )
                         }
+
                         is CameraError -> {
                             result.error(
                                 MobileScannerErrorCodes.CAMERA_ERROR,
@@ -232,6 +254,7 @@ class MobileScannerHandler(
                                 null
                             )
                         }
+
                         is NoCamera -> {
                             result.error(
                                 MobileScannerErrorCodes.NO_CAMERA_ERROR,
@@ -239,6 +262,7 @@ class MobileScannerHandler(
                                 null
                             )
                         }
+
                         else -> {
                             result.error(
                                 MobileScannerErrorCodes.GENERIC_ERROR,
@@ -289,7 +313,8 @@ class MobileScannerHandler(
             Uri.fromFile(File(filePath)),
             buildBarcodeScannerOptions(formats, false),
             analyzeImageSuccessCallback,
-            analyzeImageErrorCallback)
+            analyzeImageErrorCallback
+        )
     }
 
     private fun toggleTorch(result: MethodChannel.Result) {
@@ -319,18 +344,25 @@ class MobileScannerHandler(
             result.success(null)
         } catch (e: ZoomWhenStopped) {
             result.error(
-                MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR, MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR_MESSAGE, null)
+                MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR,
+                MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR_MESSAGE,
+                null
+            )
         } catch (e: ZoomNotInRange) {
             result.error(
-                MobileScannerErrorCodes.GENERIC_ERROR, MobileScannerErrorCodes.INVALID_ZOOM_SCALE_ERROR_MESSAGE, null)
+                MobileScannerErrorCodes.GENERIC_ERROR,
+                MobileScannerErrorCodes.INVALID_ZOOM_SCALE_ERROR_MESSAGE,
+                null
+            )
         }
     }
 
-    private fun setZoomRatio(scale: Float) : Boolean {
+    private fun setZoomRatio(scale: Float): Boolean {
         try {
             mobileScanner!!.setZoomRatio(scale.toDouble())
             return true
-        } catch (e: ZoomWhenStopped) { }
+        } catch (e: ZoomWhenStopped) {
+        }
         return false
     }
 
@@ -340,7 +372,10 @@ class MobileScannerHandler(
             result.success(null)
         } catch (e: ZoomWhenStopped) {
             result.error(
-                MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR, MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR_MESSAGE, null)
+                MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR,
+                MobileScannerErrorCodes.SET_SCALE_WHEN_STOPPED_ERROR_MESSAGE,
+                null
+            )
         }
     }
 
@@ -350,36 +385,25 @@ class MobileScannerHandler(
         result.success(null)
     }
 
-    private fun buildBarcodeScannerOptions(formats: List<Int>?, autoZoom: Boolean): BarcodeScannerOptions? {
-        val builder : BarcodeScannerOptions.Builder?
-        if (formats == null) {
-            builder = BarcodeScannerOptions.Builder()
-        } else {
-            val formatsList: MutableList<Int> = mutableListOf()
+    private fun buildBarcodeScannerOptions(
+        formats: List<Int>?,
+        autoZoom: Boolean
+    ): BarcodeReader.Options {
+        val options = BarcodeReader.Options()
+        if (formats != null) {
+            val formatsSet: MutableSet<BarcodeReader.Format> = mutableSetOf()
 
             for (formatValue in formats) {
-                formatsList.add(BarcodeFormats.fromRawValue(formatValue).intValue)
+                val format = BarcodeFormats.fromRawValue(formatValue)
+                if (format != BarcodeFormats.ALL_FORMATS) {
+                    formatsSet.add(format.value)
+                }
             }
 
-            if (formatsList.size == 1) {
-                builder = BarcodeScannerOptions.Builder().setBarcodeFormats(formatsList.first())
-            } else {
-                builder = BarcodeScannerOptions.Builder().setBarcodeFormats(
-                    formatsList.first(),
-                    *formatsList.subList(1, formatsList.size).toIntArray()
-                )
-            }
+            options.formats = formatsSet.toSet()
         }
 
-        if (autoZoom) {
-            builder.setZoomSuggestionOptions(
-                ZoomSuggestionOptions.Builder {
-                    setZoomRatio(it)
-                }.setMaxSupportedZoomRatio(getMaxZoomRatio())
-                    .build())
-        }
-
-        return builder.build()
+        return options
     }
 
     private fun getMaxZoomRatio(): Float {
@@ -389,7 +413,8 @@ class MobileScannerHandler(
             for (cameraId in cameraManager.cameraIdList) {
                 val characteristics = cameraManager.getCameraCharacteristics(cameraId)
 
-                val maxZoomRatio = characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+                val maxZoomRatio =
+                    characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
                 if (maxZoomRatio != null && maxZoomRatio > maxZoom) {
                     maxZoom = maxZoomRatio
                 }

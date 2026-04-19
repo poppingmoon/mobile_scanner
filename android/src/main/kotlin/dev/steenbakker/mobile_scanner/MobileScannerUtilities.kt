@@ -1,12 +1,13 @@
 package dev.steenbakker.mobile_scanner
 
+import android.R.attr.valueType
 import android.graphics.ImageFormat
 import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.media.Image
-import com.google.mlkit.vision.barcode.common.Barcode
 import java.io.ByteArrayOutputStream
+import zxingcpp.BarcodeReader
 
 fun Image.toByteArray(): ByteArray {
     val yBuffer = planes[0].buffer // Y
@@ -26,89 +27,61 @@ fun Image.toByteArray(): ByteArray {
     return out.toByteArray()
 }
 
-val Barcode.data: Map<String, Any?>
+val BarcodeReader.Result.data: Map<String, Any?>
     get() = mapOf(
-        "calendarEvent" to calendarEvent?.data,
-        "contactInfo" to contactInfo?.data,
-        "corners" to cornerPoints?.map { corner -> corner.data },
-        "displayValue" to displayValue,
-        "driverLicense" to driverLicense?.data,
-        "email" to email?.data,
-        "format" to format,
-        "geoPoint" to geoPoint?.data,
-        "phone" to phone?.data,
-        "rawBytes" to rawBytes,
-        "rawValue" to rawValue,
-        "size" to boundingBox?.size,
-        "sms" to sms?.data,
+        "calendarEvent" to null,
+        "contactInfo" to null,
+        "corners" to listOf(
+            position.topLeft.data,
+            position.topRight.data,
+            position.bottomRight.data,
+            position.bottomLeft.data,
+        ),
+        "displayValue" to text,
+        "driverLicense" to null,
+        "email" to null,
+        "format" to when (format) {
+            BarcodeReader.Format.CODE_128 -> 1
+            BarcodeReader.Format.CODE_39 -> 2
+            BarcodeReader.Format.CODE_93 -> 4
+            BarcodeReader.Format.CODABAR -> 8
+            BarcodeReader.Format.DATA_MATRIX -> 16
+            BarcodeReader.Format.EAN_13 -> 32
+            BarcodeReader.Format.EAN_8 -> 64
+            BarcodeReader.Format.ITF -> 128
+            BarcodeReader.Format.QR_CODE -> 256
+            BarcodeReader.Format.UPC_A -> 512
+            BarcodeReader.Format.UPC_E -> 1024
+            BarcodeReader.Format.PDF_417 -> 2048
+            BarcodeReader.Format.AZTEC -> 4096
+            else -> -1
+        },
+        "geoPoint" to null,
+        "phone" to null,
+        "rawBytes" to bytes,
+        "rawValue" to text,
+        "size" to position.size,
+        "sms" to null,
         "type" to valueType,
-        "url" to url?.data,
-        "wifi" to wifi?.data,
+        "url" to null,
+        "wifi" to null,
     )
 
 private val Point.data: Map<String, Double>
     get() = mapOf("x" to x.toDouble(), "y" to y.toDouble())
 
-private val Barcode.CalendarEvent.data: Map<String, Any?>
-    get() = mapOf(
-        "description" to description, "end" to end?.rawValue, "location" to location,
-        "organizer" to organizer, "start" to start?.rawValue, "status" to status,
-        "summary" to summary
-    )
-
-private val Barcode.ContactInfo.data: Map<String, Any?>
-    get() = mapOf(
-        "addresses" to addresses.map { address -> address.data },
-        "emails" to emails.map { email -> email.data }, "name" to name?.data,
-        "organization" to organization, "phones" to phones.map { phone -> phone.data },
-        "title" to title, "urls" to urls
-    )
-
-private val Barcode.Address.data: Map<String, Any?>
-    get() = mapOf(
-        "addressLines" to addressLines.map { addressLine -> addressLine.toString() },
-        "type" to type
-    )
-
-private val Barcode.PersonName.data: Map<String, Any?>
-    get() = mapOf(
-        "first" to first, "formattedName" to formattedName, "last" to last,
-        "middle" to middle, "prefix" to prefix, "pronunciation" to pronunciation,
-        "suffix" to suffix
-    )
-
-private val Barcode.DriverLicense.data: Map<String, Any?>
-    get() = mapOf(
-        "addressCity" to addressCity, "addressState" to addressState,
-        "addressStreet" to addressStreet, "addressZip" to addressZip, "birthDate" to birthDate,
-        "documentType" to documentType, "expiryDate" to expiryDate, "firstName" to firstName,
-        "gender" to gender, "issueDate" to issueDate, "issuingCountry" to issuingCountry,
-        "lastName" to lastName, "licenseNumber" to licenseNumber, "middleName" to middleName
-    )
-
-private val Barcode.Email.data: Map<String, Any?>
-    get() = mapOf("address" to address, "body" to body, "subject" to subject, "type" to type)
-
-private val Barcode.GeoPoint.data: Map<String, Any?>
-    get() = mapOf("latitude" to lat, "longitude" to lng)
-
-private val Barcode.Phone.data: Map<String, Any?>
-    get() = mapOf("number" to number, "type" to type)
-
-private val Barcode.Sms.data: Map<String, Any?>
-    get() = mapOf("message" to message, "phoneNumber" to phoneNumber)
-
-private val Barcode.UrlBookmark.data: Map<String, Any?>
-    get() = mapOf("title" to title, "url" to url)
-
-private val Barcode.WiFi.data: Map<String, Any?>
-    get() = mapOf("encryptionType" to encryptionType, "password" to password, "ssid" to ssid)
-
-private val Rect.size: Map<String, Any?>
+private val BarcodeReader.Position.size: Map<String, Any?>
     get() {
         // Rect.isValid can't be accessed for some reason, so just do the check manually.
+        val left = topLeft.x
+        val right = topRight.x
+        val top = topLeft.y
+        val bottom = bottomLeft.y
         if (left <= right && top <= bottom) {
-            return mapOf("width" to width().toDouble(), "height" to height().toDouble())
+            return mapOf(
+                "width" to (right - left).toDouble(),
+                "height" to (bottom - top).toDouble()
+            )
         }
 
         return emptyMap()

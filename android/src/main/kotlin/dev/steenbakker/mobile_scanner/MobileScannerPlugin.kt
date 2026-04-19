@@ -1,10 +1,12 @@
 package dev.steenbakker.mobile_scanner
 
+import androidx.camera.core.ExperimentalGetImage
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 
 /** MobileScannerPlugin */
+@ExperimentalGetImage
 class MobileScannerPlugin : FlutterPlugin, ActivityAware {
     private var activityPluginBinding: ActivityPluginBinding? = null
     private var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding? = null

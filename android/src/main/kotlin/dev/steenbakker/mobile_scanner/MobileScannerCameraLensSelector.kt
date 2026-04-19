@@ -5,7 +5,9 @@ import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.util.Log
 import android.util.SizeF
+import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraSelector
 import kotlin.math.sqrt
 
@@ -75,13 +77,17 @@ object MobileScannerCameraLensSelector {
      * @param sensorHeightMm The physical sensor height in millimeters
      * @return The 35mm equivalent focal length as an integer, or -1 if inputs are invalid
      */
-    fun calculate35mmEquivalent(focalLengthMm: Float, sensorWidthMm: Float, sensorHeightMm: Float): Int {
+    fun calculate35mmEquivalent(
+        focalLengthMm: Float,
+        sensorWidthMm: Float,
+        sensorHeightMm: Float
+    ): Int {
         if (sensorWidthMm <= 0f || sensorHeightMm <= 0f || focalLengthMm < 0f) {
             return -1
         }
         val sensorDiagonal = sqrt(
             (sensorWidthMm * sensorWidthMm) +
-            (sensorHeightMm * sensorHeightMm)
+                    (sensorHeightMm * sensorHeightMm)
         )
         val cropFactor = FULL_FRAME_DIAGONAL_MM / sensorDiagonal
         return (focalLengthMm * cropFactor).toInt()
@@ -174,7 +180,8 @@ object MobileScannerCameraLensSelector {
      * @return The lens type, or null if the characteristics are insufficient
      */
     fun getLensTypeFromCharacteristics(characteristics: CameraCharacteristics): Int? {
-        val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+        val focalLengths =
+            characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
         val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
 
         if (focalLengths == null || focalLengths.isEmpty() || sensorSize == null) {
@@ -241,7 +248,11 @@ object MobileScannerCameraLensSelector {
                                 supportedLenses.add(lensType)
                             }
                         } catch (e: Exception) {
-                            Log.w(TAG, "Failed to get physical camera $physicalId characteristics", e)
+                            Log.w(
+                                TAG,
+                                "Failed to get physical camera $physicalId characteristics",
+                                e
+                            )
                         }
                     }
                 } else {
@@ -269,8 +280,10 @@ object MobileScannerCameraLensSelector {
      * @param lensType [LENS_TYPE_NORMAL], [LENS_TYPE_WIDE], [LENS_TYPE_ZOOM], or [LENS_TYPE_ANY]
      * @return CameraSelector configured for the desired camera
      */
+    @OptIn(ExperimentalCamera2Interop::class)
     fun selectCamera(cameraManager: CameraManager, facing: Int, lensType: Int): CameraSelector {
-        val lensFacing = if (facing == 0) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+        val lensFacing =
+            if (facing == 0) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
 
         // If no specific lens type is requested, return default camera for facing direction
         if (lensType == LENS_TYPE_ANY) {
@@ -288,8 +301,10 @@ object MobileScannerCameraLensSelector {
                         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
 
                         // Get focal lengths and sensor size for 35mm equivalent calculation
-                        val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                        val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                        val focalLengths =
+                            characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                        val sensorSize =
+                            characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
 
                         if (focalLengths == null || focalLengths.isEmpty() || sensorSize == null) {
                             // Without focal length or sensor info, we can't determine the lens type.
@@ -313,8 +328,10 @@ object MobileScannerCameraLensSelector {
                 // If filtering resulted in no cameras, return all cameras with correct facing
                 // to prevent camera binding failures
                 if (filteredCameras.isEmpty()) {
-                    Log.w(TAG,
-                        "Requested lens type ${getLensTypeName(lensType)} not available, falling back to default camera")
+                    Log.w(
+                        TAG,
+                        "Requested lens type ${getLensTypeName(lensType)} not available, falling back to default camera"
+                    )
                     cameraInfos
                 } else {
                     filteredCameras
