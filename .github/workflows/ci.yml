@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [master, develop]
   pull_request:
 
 concurrency:
@@ -140,6 +139,7 @@ jobs:
           path: coverage/lcov.info
 
       - name: Upload Coverage to Codecov
+        if: false
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
