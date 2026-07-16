@@ -1,3 +1,26 @@
+## 7.3.0
+
+**New features**
+
+* [Web] Added support for multiple barcode detection backends, selectable via `MobileScannerPlatform.instance.setWebBarcodeReader(WebBarcodeReader reader)`:
+  * `WebBarcodeReader.auto` (default), uses the native `BarcodeDetector` API when available, and falls back to `zxing-wasm` otherwise.
+  * `WebBarcodeReader.barcodeDetector`, uses the W3C Shape Detection API (Chrome 83+, Edge 83+, Safari 17+). No external library is loaded.
+  * `WebBarcodeReader.zxingWasm`, uses zxing-wasm (ZXing C++ compiled to WebAssembly), which works in all modern browsers including Firefox.
+  * `WebBarcodeReader.zxingJs`, the legacy ZXing JavaScript backend, retained for backward compatibility.
+* [Web] Added `MobileScannerPlatform.instance.activeWebReader` to query which backend is currently active.
+* Added `BarcodeFormat.maxiCode` and `BarcodeFormat.microQrCode`, supported by the `WebBarcodeReader.zxingJs` and `WebBarcodeReader.zxingWasm` backends.
+* Added `BarcodeFormat.dataBar`, `BarcodeFormat.dataBarExpanded` and `BarcodeFormat.dataBarLimited` (GS1 DataBar / RSS-14), supported by the `WebBarcodeReader.zxingJs` and `WebBarcodeReader.zxingWasm` backends (DataBar and DataBar Expanded only for `zxingJs`), and by Apple Vision on iOS 15+ / macOS 12+.
+
+**Improvements**
+
+* [Web] Bumped `@zxing/library` (the `WebBarcodeReader.zxingJs` backend) from 0.21.3 to 0.23.0.
+
+**Bug Fixes**
+
+* Fixed disposing a `MobileScannerController` also disposing the platform resources of a different controller. Disposing a controller that does not hold the active camera session no longer tears down the camera of the controller that does. ([#1631](https://github.com/juliansteenbakker/mobile_scanner/issues/1631))
+* Fixed a subscription leak where a controller that was disposed without being stopped kept its internal event stream subscriptions alive.
+* Fixed an issue when running the plugin using AGP 9.
+
 ## 7.2.1
 
 **Improvements**
