@@ -4,6 +4,7 @@ import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.graphics.Rect
+import android.media.Image
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -48,6 +49,7 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import zxingcpp.BarcodeReader
 
 @ExperimentalGetImage
@@ -70,7 +72,9 @@ class MobileScanner(
     private var cameraSelector: CameraSelector? = null
     private var preview: Preview? = null
     private var surfaceProducer: TextureRegistry.SurfaceProducer? = null
-    private var scanner: BarcodeReader? = null
+
+    @VisibleForTesting
+    internal var scanner: BarcodeReader? = null
     private var lastScanned: List<String?>? = null
     private var scannerTimeout = false
     private var imageAnalysis: ImageAnalysis? = null
@@ -112,36 +116,71 @@ class MobileScanner(
      */
     @ExperimentalGetImage
     val captureOutput = ImageAnalysis.Analyzer { imageProxy ->
-        val mediaImage = imageProxy.image ?: return@Analyzer
+        val mediaImage = imageProxy.image
+        if (mediaImage == null) {
+            imageProxy.close()
+            return@Analyzer
+        }
 
         if (detectionSpeed == DetectionSpeed.NORMAL && scannerTimeout) {
             imageProxy.close()
             return@Analyzer
         } else if (detectionSpeed == DetectionSpeed.NORMAL) {
             scannerTimeout = true
+            Handler(Looper.getMainLooper()).postDelayed({
+                scannerTimeout = false
+            }, detectionTimeout)
         }
 
         // Create InputImage directly from ImageProxy for better performance
         // Only convert to Bitmap if we need to invert colors
-        val invertedBitmap: Bitmap? = if (invertImage) {
-            val bitmap = imageProxy.toBitmap()
-            val invertedBitmap = invertBitmapColors(bitmap)
-            bitmap.recycle()
-            invertedBitmap
-        } else {
-            null
+        val invertedBitmap = try {
+            if (invertImage) {
+                val bitmap = imageProxy.toBitmap()
+                try {
+                    invertBitmapColors(bitmap)
+                } finally {
+                    bitmap.recycle()
+                }
+            } else {
+                null
+            }
+        } catch (error: Exception) {
+            imageProxy.close()
+            mobileScannerErrorCallback(error.localizedMessage ?: error.toString())
+            return@Analyzer
         }
 
-        scanner?.let {
+        // CameraX will not deliver the next frame until this ImageProxy is
+        // closed. Every exit path below, synchronous or asynchronous, must
+        // release it exactly once, otherwise barcode analysis stalls while
+        // the preview keeps running.
+        val frameReleased = AtomicBoolean(false)
+        fun releaseFrame() {
+            if (!frameReleased.compareAndSet(false, true)) return
+            invertedBitmap?.let { bitmap ->
+                if (!bitmap.isRecycled) bitmap.recycle()
+            }
+            imageProxy.close()
+        }
+
+        val barcodeScanner = scanner
+        if (barcodeScanner == null) {
+            releaseFrame()
+            return@Analyzer
+        }
+
+        try {
             val barcodes = if (invertedBitmap != null) {
-                it.read(
+                barcodeScanner.read(
                     invertedBitmap,
                     cropRect = imageProxy.cropRect,
                     rotation = imageProxy.imageInfo.rotationDegrees,
                 )
             } else {
-                it.read(imageProxy)
+                barcodeScanner.read(imageProxy)
             }
+
             if (detectionSpeed == DetectionSpeed.NO_DUPLICATES) {
                 val newScannedBarcodes = barcodes.mapNotNull { barcode ->
                     barcode.text
@@ -149,8 +188,8 @@ class MobileScanner(
 
                 if (newScannedBarcodes == lastScanned) {
                     // New scanned is duplicate, returning
-                    imageProxy.close()
-                    return@let
+                    releaseFrame()
+                    return@Analyzer
                 }
                 if (newScannedBarcodes.isNotEmpty()) {
                     lastScanned = newScannedBarcodes
@@ -176,75 +215,75 @@ class MobileScanner(
             }
 
             if (barcodeMap.isEmpty()) {
-                imageProxy.close()
-                return@let
+                releaseFrame()
+                return@Analyzer
             }
 
             val portrait = (camera?.cameraInfo?.sensorRotationDegrees ?: 0) % 180 == 0
 
             if (!returnImage) {
-                mobileScannerCallback(
-                    barcodeMap,
-                    null,
-                    if (portrait) imageProxy.width else imageProxy.height,
-                    if (portrait) imageProxy.height else imageProxy.width,
-                )
-                // Clean up the inverted bitmap if we created one
-                invertedBitmap?.recycle()
-                imageProxy.close()
-                return@let
+                try {
+                    mobileScannerCallback(
+                        barcodeMap,
+                        null,
+                        if (portrait) imageProxy.width else imageProxy.height,
+                        if (portrait) imageProxy.height else imageProxy.width,
+                    )
+                } finally {
+                    releaseFrame()
+                }
+                return@Analyzer
             }
 
-            // Use Coroutine to process the image and generate the Bitmap to prevent main UI
+            // Use a Coroutine to process the image and prevent dropping frames on the main thread.
             CoroutineScope(Dispatchers.IO).launch {
-                // Get bitmap for image return. reuse inverted bitmap if available, otherwise create from imageProxy
-                val baseBitmap = invertedBitmap ?: imageProxy.toBitmap()
+                var baseBitmap: Bitmap? = null
+                var outputBitmap: Bitmap? = null
+                try {
+                    // Get bitmap for image return. reuse inverted bitmap if available, otherwise create from imageProxy
+                    baseBitmap = invertedBitmap ?: imageProxy.toBitmap()
 
-                // Rotate the bitmap based on the camera's rotation degrees
-                var rotatedBitmap =
-                    rotateBitmap(baseBitmap, camera?.cameraInfo?.sensorRotationDegrees ?: 90)
+                    // Rotate the bitmap based on the camera's rotation degrees
+                    outputBitmap =
+                        rotateBitmap(baseBitmap, camera?.cameraInfo?.sensorRotationDegrees ?: 90)
 
-                // Revert inverted image colors for the returned image (MLKit already scanned the inverted version)
-                if (invertImage) {
-                    val revertedBitmap = invertBitmapColors(rotatedBitmap)
-                    rotatedBitmap.recycle()
-                    rotatedBitmap = revertedBitmap
+                    // Revert inverted image colors for the returned image (MLKit already scanned the inverted version)
+                    if (invertImage) {
+                        val revertedBitmap = invertBitmapColors(outputBitmap)
+                        outputBitmap.recycle()
+                        outputBitmap = revertedBitmap
+                    }
+
+                    // Convert the final bitmap to JPEG byte array
+                    val stream = ByteArrayOutputStream()
+                    outputBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                    val byteArray = stream.toByteArray()
+
+                    // Call the callback with the result
+                    mobileScannerCallback(
+                        barcodeMap,
+                        byteArray,
+                        outputBitmap.width,
+                        outputBitmap.height
+                    )
+                } catch (error: Exception) {
+                    mobileScannerErrorCallback(error.localizedMessage ?: error.toString())
+                } finally {
+                    outputBitmap?.let { bitmap ->
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
+                    baseBitmap?.let { bitmap ->
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
+                    releaseFrame()
                 }
-
-                // Clean up the base bitmap if it's not needed anymore
-                if (baseBitmap != rotatedBitmap) {
-                    baseBitmap.recycle()
-                }
-
-                // Convert the final bitmap to JPEG byte array
-                val stream = ByteArrayOutputStream()
-                rotatedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                val byteArray = stream.toByteArray()
-
-                val bmWidth = rotatedBitmap.width
-                val bmHeight = rotatedBitmap.height
-
-                // Call the callback with the result
-                mobileScannerCallback(
-                    barcodeMap,
-                    byteArray,
-                    bmWidth,
-                    bmHeight
-                )
-
-                // Clean up resources
-                rotatedBitmap.recycle()
-                imageProxy.close()
             }
-        }
-
-        if (detectionSpeed == DetectionSpeed.NORMAL) {
-            // Set timer and continue
-            Handler(Looper.getMainLooper()).postDelayed({
-                scannerTimeout = false
-            }, detectionTimeout)
+        } catch (error: Exception) {
+            releaseFrame()
+            mobileScannerErrorCallback(error.localizedMessage ?: error.toString())
         }
     }
+
 
     /**
      * Create a {@link Preview.SurfaceProvider} that specifies how to provide a {@link Surface} to a
@@ -411,7 +450,19 @@ class MobileScanner(
         val mainExecutor = ContextCompat.getMainExecutor(activity)
 
         cameraProviderFuture.addListener({
-            cameraProvider = cameraProviderFuture.get()
+            try {
+                cameraProvider = cameraProviderFuture.get()
+            } catch (e: Exception) {
+                // CameraX can fail to initialize on some devices (e.g.
+                // "Available cameras: 0", camera held by another process, or a
+                // transient HAL error). get() rethrows that as an uncaught
+                // ExecutionException here, which crashes the host app. Route it
+                // through the normal error callback instead so the Dart side can
+                // surface it via errorBuilder rather than terminating.
+                mobileScannerErrorCallback(NoCamera())
+
+                return@addListener
+            }
             val numberOfCameras = cameraProvider?.availableCameraInfos?.size
 
             if (cameraProvider == null) {
