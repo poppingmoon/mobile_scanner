@@ -1,9 +1,11 @@
 package dev.steenbakker.mobile_scanner
 
 import android.app.Activity
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.graphics.Rect
+import android.hardware.SensorManager
 import android.media.Image
 import android.net.Uri
 import android.os.Build
@@ -17,6 +19,7 @@ import androidx.annotation.VisibleForTesting
 import androidx.camera.camera2.Camera2Config
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.CameraXConfig
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ExperimentalLensFacing
@@ -35,6 +38,7 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.google.common.util.concurrent.ListenableFuture
 import dev.steenbakker.mobile_scanner.objects.DetectionSpeed
 import dev.steenbakker.mobile_scanner.objects.MobileScannerErrorCodes
 import dev.steenbakker.mobile_scanner.objects.MobileScannerStartParameters
@@ -71,14 +75,16 @@ class MobileScanner(
     private var camera: Camera? = null
     private var cameraSelector: CameraSelector? = null
     private var preview: Preview? = null
-    private var surfaceProducer: TextureRegistry.SurfaceProducer? = null
-
+    @VisibleForTesting
+    internal var surfaceProducer: TextureRegistry.SurfaceProducer? = null
     @VisibleForTesting
     internal var scanner: BarcodeReader? = null
     private var lastScanned: List<String?>? = null
     private var scannerTimeout = false
     private var imageAnalysis: ImageAnalysis? = null
     private var analysisExecutor = Executors.newSingleThreadExecutor()
+    private var autoTorch: AutoTorch? = null
+    private var torchStateCallback: TorchStateCallback? = null
 
     /// Configurable variables
     var scanWindow: List<Float>? = null
@@ -293,6 +299,14 @@ class MobileScanner(
     fun createSurfaceProvider(surfaceProducer: TextureRegistry.SurfaceProducer): Preview.SurfaceProvider {
         return Preview.SurfaceProvider { request: SurfaceRequest ->
             run {
+                // CameraX delivers the request asynchronously on the main thread.
+                // If the camera was stopped or restarted in the meantime,
+                // the captured surface producer was released and must not be used.
+                if (this.surfaceProducer !== surfaceProducer) {
+                    request.willNotProvideSurface()
+                    return@SurfaceProvider
+                }
+
                 // Set the callback for the surfaceProducer to invalidate Surfaces that it produces
                 // when they get destroyed.
                 surfaceProducer.setCallback(
@@ -400,6 +414,7 @@ class MobileScanner(
         returnImage: Boolean,
         cameraPosition: CameraSelector,
         torch: Boolean,
+        autoTorchEnabled: Boolean,
         detectionSpeed: DetectionSpeed,
         torchStateCallback: TorchStateCallback,
         zoomScaleStateCallback: ZoomScaleStateCallback,
@@ -412,6 +427,7 @@ class MobileScanner(
     ) {
         this.detectionSpeed = detectionSpeed
         this.detectionTimeout = detectionTimeout
+        this.torchStateCallback = torchStateCallback
         this.returnImage = returnImage
         this.invertImage = invertImage
 
@@ -520,10 +536,14 @@ class MobileScanner(
             }
 
             camera?.let {
+                if (autoTorchEnabled && !torch && it.cameraInfo.hasFlashUnit()) {
+                    startAutoTorch(it)
+                }
+
                 // Register the torch listener
                 it.cameraInfo.torchState.observe(activity as LifecycleOwner) { state ->
                     // TorchState.OFF = 0; TorchState.ON = 1
-                    torchStateCallback(state)
+                    torchStateCallback(if (autoTorch != null) AutoTorch.TORCH_STATE_AUTO else state)
                 }
 
                 // Register the zoom scale listener
@@ -544,6 +564,7 @@ class MobileScanner(
                             it.cameraControl.setZoomRatio(initialZoom.toFloat())
                         }
                     } catch (e: Exception) {
+                        stopAutoTorch()
                         mobileScannerErrorCallback(ZoomNotInRange())
 
                         return@addListener
@@ -566,7 +587,11 @@ class MobileScanner(
                     return@let
                 }
 
-                currentTorchState = it.torchState.value ?: -1
+                currentTorchState = if (autoTorch != null) {
+                    AutoTorch.TORCH_STATE_AUTO
+                } else {
+                    it.torchState.value ?: -1
+                }
             }
 
             deviceOrientationListener.start()
@@ -619,6 +644,8 @@ class MobileScanner(
     }
 
     private fun pauseCamera() {
+        stopAutoTorch()
+
         // Pause camera by unbinding all use cases
         cameraProvider?.unbindAll()
         isPaused = true
@@ -634,6 +661,8 @@ class MobileScanner(
 //    }
 
     private fun releaseCamera() {
+        stopAutoTorch()
+
         val owner = activity as LifecycleOwner
         // Release the camera observers first.
         camera?.cameraInfo?.let {
@@ -661,6 +690,45 @@ class MobileScanner(
         analysisExecutor = Executors.newSingleThreadExecutor()
     }
 
+    private fun startAutoTorch(camera: Camera) {
+        val sensorManager = activity.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val candidate = AutoTorch(sensorManager) { enabled, onFailure ->
+            val future = this.camera?.cameraControl?.enableTorch(enabled)
+            if (future == null) onFailure() else future.onFailure(onFailure)
+        }
+
+        // Without a light sensor, the torch state is reported as is.
+        if (!candidate.start()) {
+            return
+        }
+
+        autoTorch = candidate
+
+        // The torch is turned off while the camera is closed, so only listen while it is open.
+        camera.cameraInfo.cameraState.observe(activity as LifecycleOwner) { state ->
+            when (state.type) {
+                CameraState.Type.OPEN -> autoTorch?.resume()
+                CameraState.Type.OPENING -> {}
+                else -> autoTorch?.stop()
+            }
+        }
+    }
+
+    private fun stopAutoTorch() {
+        autoTorch?.stop()
+        autoTorch = null
+    }
+
+    private fun ListenableFuture<Void>.onFailure(block: () -> Unit) {
+        addListener({
+            try {
+                get()
+            } catch (_: Exception) {
+                block()
+            }
+        }, ContextCompat.getMainExecutor(activity))
+    }
+
     private fun isStopped() = camera == null && preview == null
 
     /**
@@ -672,9 +740,22 @@ class MobileScanner(
                 return@let
             }
 
-            when (it.cameraInfo.torchState.value) {
+            // A manual toggle ends the automatic mode.
+            val wasAuto = autoTorch != null
+            stopAutoTorch()
+
+            val future = when (it.cameraInfo.torchState.value) {
                 TorchState.OFF -> it.cameraControl.enableTorch(true)
                 TorchState.ON -> it.cameraControl.enableTorch(false)
+                else -> null
+            }
+
+            if (wasAuto) {
+                // Dart still shows the auto state, which only a torch change would replace.
+                val reportTorchState: () -> Unit = {
+                    torchStateCallback?.invoke(it.cameraInfo.torchState.value ?: TorchState.OFF)
+                }
+                if (future == null) reportTorchState() else future.onFailure(reportTorchState)
             }
         }
     }

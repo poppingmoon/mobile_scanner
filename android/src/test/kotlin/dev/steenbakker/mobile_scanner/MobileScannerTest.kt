@@ -2,8 +2,11 @@ package dev.steenbakker.mobile_scanner
 
 import android.app.Activity
 import android.graphics.Point
+import android.util.Size
+import android.view.Surface
 import androidx.camera.core.ImageInfo
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.SurfaceRequest
 import io.flutter.view.TextureRegistry
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -245,5 +248,64 @@ internal class MobileScannerTest {
         mobileScanner.captureOutput.analyze(imageProxy)
 
         Mockito.verify(imageProxy, Mockito.times(1)).close()
+    }
+
+    @Test
+    fun createSurfaceProvider_skipsRequestWhenSurfaceProducerWasReleased() {
+        val mobileScanner = createMobileScanner()
+        val surfaceProducer = Mockito.mock(TextureRegistry.SurfaceProducer::class.java)
+        val request = Mockito.mock(SurfaceRequest::class.java)
+
+        mobileScanner.surfaceProducer = surfaceProducer
+        val surfaceProvider = mobileScanner.createSurfaceProvider(surfaceProducer)
+
+        // Simulate `stop()` / `dispose()` releasing the camera before CameraX
+        // delivers the pending surface request.
+        mobileScanner.surfaceProducer = null
+
+        surfaceProvider.onSurfaceRequested(request)
+
+        Mockito.verify(request).willNotProvideSurface()
+        Mockito.verifyNoInteractions(surfaceProducer)
+    }
+
+    @Test
+    fun createSurfaceProvider_skipsRequestWhenSurfaceProducerWasReplaced() {
+        val mobileScanner = createMobileScanner()
+        val staleSurfaceProducer = Mockito.mock(TextureRegistry.SurfaceProducer::class.java)
+        val request = Mockito.mock(SurfaceRequest::class.java)
+
+        mobileScanner.surfaceProducer = staleSurfaceProducer
+        val surfaceProvider = mobileScanner.createSurfaceProvider(staleSurfaceProducer)
+
+        // Simulate a fast `stop()` followed by `start()`, which creates a new surface producer.
+        mobileScanner.surfaceProducer = Mockito.mock(TextureRegistry.SurfaceProducer::class.java)
+
+        surfaceProvider.onSurfaceRequested(request)
+
+        Mockito.verify(request).willNotProvideSurface()
+        Mockito.verifyNoInteractions(staleSurfaceProducer)
+    }
+
+    @Test
+    fun createSurfaceProvider_providesSurfaceFromActiveSurfaceProducer() {
+        val mobileScanner = createMobileScanner()
+        val surfaceProducer = Mockito.mock(TextureRegistry.SurfaceProducer::class.java)
+        val request = Mockito.mock(SurfaceRequest::class.java)
+        val surface = Mockito.mock(Surface::class.java)
+
+        Mockito.`when`(request.resolution).thenReturn(Size(640, 480))
+        Mockito.`when`(surfaceProducer.surface).thenReturn(surface)
+
+        mobileScanner.surfaceProducer = surfaceProducer
+        mobileScanner.createSurfaceProvider(surfaceProducer).onSurfaceRequested(request)
+
+        Mockito.verify(surfaceProducer).setSize(640, 480)
+        Mockito.verify(request).provideSurface(
+            Mockito.eq(surface),
+            Mockito.any(),
+            Mockito.any(),
+        )
+        Mockito.verify(request, Mockito.never()).willNotProvideSurface()
     }
 }
